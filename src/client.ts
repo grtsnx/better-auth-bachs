@@ -96,6 +96,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
           data: {
             subscriptionId: string;
             cancelAtPeriodEnd?: boolean;
+            reason?: string | null;
             idempotencyKey?: string;
           },
           fetchOptions?: Record<string, unknown>,
@@ -111,6 +112,20 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
           fetchOptions?: Record<string, unknown>,
         ) => {
           return $fetch("/bachs/list-subscriptions", {
+            method: "GET",
+            query,
+            ...fetchOptions,
+          });
+        },
+        listRemoteSubscriptions: async (
+          query: ReferenceInput & {
+            status?: "trialing" | "active" | "past_due" | "unpaid" | "canceled";
+            limit?: number;
+            offset?: number;
+          } = {},
+          fetchOptions?: Record<string, unknown>,
+        ) => {
+          return $fetch("/bachs/list-remote-subscriptions", {
             method: "GET",
             query,
             ...fetchOptions,
@@ -136,6 +151,16 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
             ...fetchOptions,
           });
         },
+        listCheckouts: async (
+          query: ReferenceInput = {},
+          fetchOptions?: Record<string, unknown>,
+        ) => {
+          return $fetch("/bachs/list-checkouts", {
+            method: "GET",
+            query,
+            ...fetchOptions,
+          });
+        },
         listPayments: async (
           query: ReferenceInput = {},
           fetchOptions?: Record<string, unknown>,
@@ -151,6 +176,16 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
           fetchOptions?: Record<string, unknown>,
         ) => {
           return $fetch("/bachs/get-payment", {
+            method: "GET",
+            query,
+            ...fetchOptions,
+          });
+        },
+        getCustomer: async (
+          query: ReferenceInput = {},
+          fetchOptions?: Record<string, unknown>,
+        ) => {
+          return $fetch("/bachs/get-customer", {
             method: "GET",
             query,
             ...fetchOptions,
@@ -185,10 +220,24 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
           });
         },
         listCatalogProducts: async (
-          query: { limit?: number; cursor?: string } = {},
+          query: {
+            limit?: number;
+            cursor?: string;
+            includeArchived?: boolean;
+          } = {},
           fetchOptions?: Record<string, unknown>,
         ) => {
           return $fetch("/bachs/list-catalog-products", {
+            method: "GET",
+            query,
+            ...fetchOptions,
+          });
+        },
+        getCatalogProduct: async (
+          query: { productId: string },
+          fetchOptions?: Record<string, unknown>,
+        ) => {
+          return $fetch("/bachs/get-catalog-product", {
             method: "GET",
             query,
             ...fetchOptions,
@@ -234,9 +283,13 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
               description?: string | null;
               currency: string;
               amount?: string;
+              presetAmount?: string;
+              minimumAmount?: string;
+              maximumAmount?: string;
               priceType?: "fixed" | "free" | "custom";
               billingInterval?: "day" | "week" | "month" | "year";
               billingFrequency?: number;
+              metadata?: Record<string, unknown> | null;
               idempotencyKey?: string;
             },
             fetchOptions?: Record<string, unknown>,
@@ -247,11 +300,35 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
               ...fetchOptions,
             });
           },
+          listRemotePayments: async (
+            query: {
+              limit?: number;
+              offset?: number;
+              statusFilter?: string;
+            } = {},
+            fetchOptions?: Record<string, unknown>,
+          ) => {
+            return $fetch("/bachs/list-remote-payments", {
+              method: "GET",
+              query,
+              ...fetchOptions,
+            });
+          },
           listPayoutDestinations: async (
             query: { limit?: number; offset?: number } = {},
             fetchOptions?: Record<string, unknown>,
           ) => {
             return $fetch("/bachs/list-payout-destinations", {
+              method: "GET",
+              query,
+              ...fetchOptions,
+            });
+          },
+          getPayoutDestination: async (
+            query: { destinationId: string },
+            fetchOptions?: Record<string, unknown>,
+          ) => {
+            return $fetch("/bachs/get-payout-destination", {
               method: "GET",
               query,
               ...fetchOptions,

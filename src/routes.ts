@@ -463,14 +463,21 @@ export function listCatalogProducts(options: ResolvedBachsOptions) {
         .object({
           limit: z.coerce.number().int().positive().max(100).optional(),
           cursor: z.string().optional(),
+          includeArchived: z
+            .union([z.boolean(), z.literal("true"), z.literal("false")])
+            .optional(),
         })
         .optional(),
       use: [sessionMiddleware],
     },
     async (ctx) => {
+      const includeArchived =
+        ctx.query?.includeArchived === true ||
+        ctx.query?.includeArchived === "true";
       const page = await options.bachsClient.products.list({
         limit: ctx.query?.limit,
         cursor: ctx.query?.cursor,
+        include_archived: includeArchived || undefined,
       });
       return ctx.json({
         items: page.items.map((product) => ({
@@ -481,6 +488,140 @@ export function listCatalogProducts(options: ResolvedBachsOptions) {
           price: product.price,
           billingCycle: product.billing_cycle ?? null,
         })),
+        pagination: page.pagination,
+      });
+    },
+  );
+}
+
+export function getCatalogProduct(options: ResolvedBachsOptions) {
+  return createAuthEndpoint(
+    "/bachs/get-catalog-product",
+    {
+      method: "GET",
+      query: z.object({ productId: z.string().min(1) }),
+      use: [sessionMiddleware],
+    },
+    async (ctx) => {
+      const product = await options.bachsClient.products.get(ctx.query.productId);
+      return ctx.json({
+        id: product.id,
+        name: product.name,
+        description: product.description ?? null,
+        status: product.status ?? null,
+        price: product.price,
+        billingCycle: product.billing_cycle ?? null,
+        metadata: product.metadata ?? null,
+        createdAt: product.created_at ?? null,
+      });
+    },
+  );
+}
+
+export function getCustomer(options: ResolvedBachsOptions) {
+  return createAuthEndpoint(
+    "/bachs/get-customer",
+    {
+      method: "GET",
+      query: z
+        .object({
+          referenceId: z.string().optional(),
+          referenceType: z.enum(["user", "organization"]).optional(),
+        })
+        .optional(),
+      use: [sessionMiddleware],
+    },
+    async (ctx) => {
+      const user = ctx.context.session.user;
+      const referenceType = (ctx.query?.referenceType ?? "user") as BillingReferenceType;
+      const referenceId = ctx.query?.referenceId ?? user.id;
+      await authorizeBillingReference(ctx, options, {
+        referenceId,
+        referenceType,
+        userId: user.id,
+      });
+      const customer = await ctx.context.adapter.findOne({
+        model: "bachsCustomer",
+        where: [
+          { field: "referenceId", value: referenceId },
+          { field: "referenceType", value: referenceType },
+        ],
+      });
+      return ctx.json({ customer: customer ?? null });
+    },
+  );
+}
+
+export function listCheckouts(options: ResolvedBachsOptions) {
+  return createAuthEndpoint(
+    "/bachs/list-checkouts",
+    {
+      method: "GET",
+      query: z
+        .object({
+          referenceId: z.string().optional(),
+          referenceType: z.enum(["user", "organization"]).optional(),
+        })
+        .optional(),
+      use: [sessionMiddleware],
+    },
+    async (ctx) => {
+      const user = ctx.context.session.user;
+      const referenceType = (ctx.query?.referenceType ?? "user") as BillingReferenceType;
+      const referenceId = ctx.query?.referenceId ?? user.id;
+      await authorizeBillingReference(ctx, options, {
+        referenceId,
+        referenceType,
+        userId: user.id,
+      });
+      const rows = await ctx.context.adapter.findMany({
+        model: "bachsCheckout",
+        where: [
+          { field: "referenceId", value: referenceId },
+          { field: "referenceType", value: referenceType },
+        ],
+      });
+      return ctx.json({ checkouts: rows });
+    },
+  );
+}
+
+export function listRemoteSubscriptions(options: ResolvedBachsOptions) {
+  return createAuthEndpoint(
+    "/bachs/list-remote-subscriptions",
+    {
+      method: "GET",
+      query: z
+        .object({
+          referenceId: z.string().optional(),
+          referenceType: z.enum(["user", "organization"]).optional(),
+          status: z
+            .enum(["trialing", "active", "past_due", "unpaid", "canceled"])
+            .optional(),
+          limit: z.coerce.number().int().positive().max(100).optional(),
+          offset: z.coerce.number().int().nonnegative().optional(),
+        })
+        .optional(),
+      use: [sessionMiddleware],
+    },
+    async (ctx) => {
+      const user = ctx.context.session.user;
+      const referenceType = (ctx.query?.referenceType ?? "user") as BillingReferenceType;
+      const referenceId = ctx.query?.referenceId ?? user.id;
+      await authorizeBillingReference(ctx, options, {
+        referenceId,
+        referenceType,
+        userId: user.id,
+      });
+      const customerId = await requireCustomer(ctx, referenceId, referenceType);
+      const page = await options.bachsClient.subscriptions.list({
+        customer_id: customerId,
+        status: ctx.query?.status,
+        limit: ctx.query?.limit,
+        offset: ctx.query?.offset,
+      });
+      return ctx.json({
+        items: page.items,
         pagination: page.pagination,
       });
     },
@@ -570,6 +711,7 @@ export function cancelSubscription(options: ResolvedBachsOptions) {
       body: z.object({
         subscriptionId: z.string().min(1),
         cancelAtPeriodEnd: z.boolean().optional(),
+        reason: z.string().nullable().optional(),
         idempotencyKey: z.string().min(1).optional(),
       }),
       use: [sessionMiddleware],
@@ -592,7 +734,10 @@ export function cancelSubscription(options: ResolvedBachsOptions) {
       try {
         const subscription = await options.bachsClient.subscriptions.cancel(
           ctx.body.subscriptionId,
-          { cancel_at_period_end: ctx.body.cancelAtPeriodEnd ?? true },
+          {
+            cancel_at_period_end: ctx.body.cancelAtPeriodEnd ?? true,
+            reason: ctx.body.reason ?? null,
+          },
           {
             idempotencyKey:
               ctx.body.idempotencyKey ??
@@ -854,9 +999,13 @@ export function createProduct(options: ResolvedBachsOptions) {
         description: z.string().nullable().optional(),
         currency: z.string().min(3).max(3),
         amount: z.string().optional(),
+        presetAmount: z.string().optional(),
+        minimumAmount: z.string().optional(),
+        maximumAmount: z.string().optional(),
         priceType: z.enum(["fixed", "free", "custom"]).optional(),
         billingInterval: z.enum(["day", "week", "month", "year"]).optional(),
         billingFrequency: z.number().int().positive().optional(),
+        metadata: z.record(z.string(), z.unknown()).nullable().optional(),
         idempotencyKey: z.string().min(1).optional(),
       }),
       use: [sessionMiddleware],
@@ -865,17 +1014,33 @@ export function createProduct(options: ResolvedBachsOptions) {
       assertMerchant(options);
       const currency = ctx.body.currency as import("@bachs/sdk").ProductCurrency;
       const priceType = ctx.body.priceType ?? "fixed";
+      if (priceType === "fixed" && !ctx.body.amount) {
+        throw new APIError("BAD_REQUEST", {
+          code: "PRODUCT_AMOUNT_REQUIRED",
+          message: "Fixed-price products require amount (decimal string).",
+        });
+      }
       try {
         const product = await options.bachsClient.products.create(
           {
             name: ctx.body.name,
             description: ctx.body.description ?? null,
+            metadata: (ctx.body.metadata ?? null) as
+              | Record<string, string | number | boolean | null>
+              | null,
             price:
               priceType === "free"
                 ? { currency, price_type: "free" }
                 : priceType === "custom"
-                  ? { currency, price_type: "custom", preset_amount: ctx.body.amount }
-                  : { currency, amount: ctx.body.amount ?? "0.00" },
+                  ? {
+                      currency,
+                      price_type: "custom",
+                      preset_amount:
+                        ctx.body.presetAmount ?? ctx.body.amount ?? undefined,
+                      minimum_amount: ctx.body.minimumAmount,
+                      maximum_amount: ctx.body.maximumAmount,
+                    }
+                  : { currency, amount: ctx.body.amount! },
             billing_cycle: ctx.body.billingInterval
               ? {
                   interval: ctx.body.billingInterval,
@@ -892,12 +1057,56 @@ export function createProduct(options: ResolvedBachsOptions) {
         return ctx.json({
           id: product.id,
           name: product.name,
+          description: product.description ?? null,
           price: product.price,
           billingCycle: product.billing_cycle ?? null,
+          status: product.status ?? null,
         });
       } catch (err) {
         throwIfUncertain(err);
       }
+    },
+  );
+}
+
+export function listRemotePayments(options: ResolvedBachsOptions) {
+  return createAuthEndpoint(
+    "/bachs/list-remote-payments",
+    {
+      method: "GET",
+      query: z
+        .object({
+          limit: z.coerce.number().int().positive().max(100).optional(),
+          offset: z.coerce.number().int().nonnegative().optional(),
+          statusFilter: z
+            .enum([
+              "created",
+              "processing",
+              "succeeded",
+              "accepted",
+              "failed",
+              "expired",
+              "cancelled",
+              "refunded",
+              "partially_refunded",
+              "auto_refunded",
+              "underpaid",
+              "overpaid",
+            ])
+            .optional(),
+        })
+        .optional(),
+      use: [sessionMiddleware],
+    },
+    async (ctx) => {
+      assertMerchant(options);
+      return ctx.json(
+        await options.bachsClient.payments.list({
+          limit: ctx.query?.limit,
+          offset: ctx.query?.offset,
+          status_filter: ctx.query?.statusFilter,
+        }),
+      );
     },
   );
 }
@@ -922,6 +1131,23 @@ export function listPayoutDestinations(options: ResolvedBachsOptions) {
           limit: ctx.query?.limit,
           offset: ctx.query?.offset,
         }),
+      );
+    },
+  );
+}
+
+export function getPayoutDestination(options: ResolvedBachsOptions) {
+  return createAuthEndpoint(
+    "/bachs/get-payout-destination",
+    {
+      method: "GET",
+      query: z.object({ destinationId: z.string().min(1) }),
+      use: [sessionMiddleware],
+    },
+    async (ctx) => {
+      assertMerchant(options);
+      return ctx.json(
+        await options.bachsClient.payoutDestinations.get(ctx.query.destinationId),
       );
     },
   );

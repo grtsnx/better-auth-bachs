@@ -1,6 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Add get catalog product, get customer, list checkouts, list remote subscriptions
+- Merchant: get payout destination, list remote payments
+- Stronger createProduct (fixed amount required, custom min/preset/max)
+- Cancel subscription accepts `reason`
+- Full README: setup walkthrough + usage for every endpoint
+
 ## 0.4.0
+
 
 - Organization billing via `referenceId` / `referenceType`
 - Local `bachsPayment` table + list/get payment endpoints

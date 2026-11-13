@@ -1,6 +1,6 @@
 {
   "name": "better-auth-bachs",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Production-ready Bachs billing plugin for Better Auth. Built on the official @bachs/sdk — checkout, subscriptions, org billing, payments, portal, and secure webhooks.",
   "type": "module",
   "license": "MIT",

@@ -27,8 +27,12 @@ describe("better-auth-bachs", () => {
     expect(plugin.endpoints?.createCheckout).toBeTypeOf("function");
     expect(plugin.endpoints?.upgradeSubscription).toBeTypeOf("function");
     expect(plugin.endpoints?.listPayments).toBeTypeOf("function");
+    expect(plugin.endpoints?.getCatalogProduct).toBeTypeOf("function");
+    expect(plugin.endpoints?.listCheckouts).toBeTypeOf("function");
+    expect(plugin.endpoints?.listRemoteSubscriptions).toBeTypeOf("function");
     expect(plugin.endpoints?.bachsWebhook).toBeTypeOf("function");
     expect(plugin.endpoints?.getBalance).toBeUndefined();
+    expect(plugin.endpoints?.createProduct).toBeUndefined();
     expect(BACHS_ERROR_CODES.PLAN_NOT_FOUND.code).toBe("PLAN_NOT_FOUND");
   });
 
@@ -38,6 +42,9 @@ describe("better-auth-bachs", () => {
       merchant: true,
     });
     expect(plugin.endpoints?.getBalance).toBeTypeOf("function");
+    expect(plugin.endpoints?.createProduct).toBeTypeOf("function");
+    expect(plugin.endpoints?.getPayoutDestination).toBeTypeOf("function");
+    expect(plugin.endpoints?.listRemotePayments).toBeTypeOf("function");
     expect(plugin.endpoints?.createPayout).toBeTypeOf("function");
     expect(plugin.options.merchant).toBe(true);
   });
