@@ -9,6 +9,10 @@
 - Add customer/reference uniqueness and billing lookup indexes
 - Upgrade Vitest to a patched version and update vulnerable transitive development dependencies
 
+## 0.5.1
+
+- Republish after staged 0.5.0 reservation
+
 ## 0.5.0
 
 - Add get catalog product, get customer, list checkouts, list remote subscriptions
