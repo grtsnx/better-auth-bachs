@@ -87,6 +87,14 @@ export type BachsPluginOptions = {
     billingRoles?: string[];
   };
   /**
+   * Required when `merchant: true`. Authorize access to merchant-account data
+   * and operations for the signed-in user.
+   */
+  authorizeMerchant?: (
+    ctx: GenericEndpointContext,
+    userId: string,
+  ) => boolean | Promise<boolean>;
+  /**
    * Enable merchant-account endpoints (balance, banks, payouts, product create).
    * Only for apps that manage the Bachs merchant account itself.
    * @default false

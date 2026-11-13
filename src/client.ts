@@ -55,7 +55,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
             reference?: string;
             successUrl?: string;
             cancelUrl?: string | null;
-            idempotencyKey?: string;
+            idempotencyKey: string;
           } & ReferenceInput,
           fetchOptions?: Record<string, unknown>,
         ) => {
@@ -72,7 +72,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
             reference?: string;
             successUrl?: string;
             cancelUrl?: string | null;
-            idempotencyKey?: string;
+            idempotencyKey: string;
           } & ReferenceInput,
           fetchOptions?: Record<string, unknown>,
         ) => {
@@ -83,7 +83,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
           });
         },
         createPortalSession: async (
-          data: { idempotencyKey?: string } & ReferenceInput = {},
+          data: { idempotencyKey: string } & ReferenceInput,
           fetchOptions?: Record<string, unknown>,
         ) => {
           return $fetch("/bachs/create-portal-session", {
@@ -97,7 +97,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
             subscriptionId: string;
             cancelAtPeriodEnd?: boolean;
             reason?: string | null;
-            idempotencyKey?: string;
+            idempotencyKey: string;
           },
           fetchOptions?: Record<string, unknown>,
         ) => {
@@ -290,7 +290,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
               billingInterval?: "day" | "week" | "month" | "year";
               billingFrequency?: number;
               metadata?: Record<string, unknown> | null;
-              idempotencyKey?: string;
+              idempotencyKey: string;
             },
             fetchOptions?: Record<string, unknown>,
           ) => {
@@ -335,7 +335,19 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
             });
           },
           createPayoutDestination: async (
-            data: Record<string, unknown>,
+            data: {
+              currency: string;
+              name?: string;
+              accountNumber?: string;
+              bankCode?: string;
+              accountName?: string;
+              bankName?: string;
+              phoneNumber?: string;
+              mobileProvider?: string;
+              walletAddress?: string;
+              network?: string;
+              idempotencyKey: string;
+            },
             fetchOptions?: Record<string, unknown>,
           ) => {
             return $fetch("/bachs/create-payout-destination", {
@@ -350,7 +362,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
               toCurrency: string;
               amount: string;
               payoutMethod?: string | null;
-              idempotencyKey?: string;
+              idempotencyKey: string;
             },
             fetchOptions?: Record<string, unknown>,
           ) => {
@@ -366,7 +378,7 @@ export const bachsClient = (options: BachsClientOptions = {}) => {
               amount?: string;
               quoteId?: string;
               reference?: string | null;
-              idempotencyKey?: string;
+              idempotencyKey: string;
             },
             fetchOptions?: Record<string, unknown>,
           ) => {

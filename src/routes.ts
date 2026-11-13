@@ -1,4 +1,5 @@
 import { APIError, createAuthEndpoint, sessionMiddleware } from "better-auth/api";
+import type { GenericEndpointContext } from "better-auth";
 import * as z from "zod";
 import { throwIfUncertain } from "./bachs-sdk.js";
 import { BACHS_ERROR_CODES } from "./errors.js";
@@ -6,6 +7,16 @@ import {
   authorizeBillingReference,
   resolveCheckoutCustomer,
 } from "./reference.js";
+import {
+  assertMerchantAccess,
+  claimWebhookEvent,
+  getPublicPlans,
+  getPublicProducts,
+  requireLocalBillingResource,
+  resolveCheckoutProduct,
+  resolveTrustedRedirectUrl,
+  scopedIdempotencyKey,
+} from "./security.js";
 import type { BillingReferenceType, ResolvedBachsOptions } from "./types.js";
 import { BachsWebhookError, constructBachsEvent } from "./webhooks.js";
 
@@ -13,13 +24,15 @@ const referenceBody = {
   referenceId: z.string().optional(),
   referenceType: z.enum(["user", "organization"]).optional(),
 };
+const idempotencyKeySchema = z.string().trim().min(1).max(256);
 
-function findPlan(options: ResolvedBachsOptions, planName: string) {
-  return options.subscription?.plans?.find((plan) => plan.name === planName);
-}
-
-function findProduct(options: ResolvedBachsOptions, productName: string) {
-  return options.products?.products?.find((product) => product.name === productName);
+function operationIdempotencyKey(
+  operation: string,
+  actorId: string,
+  requestedKey: string,
+  reference?: { id: string; type: BillingReferenceType },
+) {
+  return scopedIdempotencyKey(operation, actorId, requestedKey, reference);
 }
 
 function extractCustomerId(data: Record<string, unknown>): string | null {
@@ -97,7 +110,7 @@ export function createCheckout(options: ResolvedBachsOptions) {
         reference: z.string().optional(),
         successUrl: z.string().url().optional(),
         cancelUrl: z.string().url().nullable().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
         ...referenceBody,
       }),
       use: [sessionMiddleware],
@@ -113,27 +126,8 @@ export function createCheckout(options: ResolvedBachsOptions) {
         userId: user.id,
       });
 
-      let productId = ctx.body.productId;
-      let planName: string | undefined;
-      let productName: string | undefined;
-      let groupId: string | undefined;
-
-      if (ctx.body.plan) {
-        const plan = findPlan(options, ctx.body.plan);
-        if (!plan) throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.PLAN_NOT_FOUND);
-        productId = plan.productId;
-        planName = plan.name;
-        groupId = plan.group;
-      } else if (ctx.body.product) {
-        const product = findProduct(options, ctx.body.product);
-        if (!product) throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.PRODUCT_NOT_FOUND);
-        productId = product.productId;
-        productName = product.name;
-      }
-
-      if (!productId) {
-        throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.PRODUCT_REQUIRED);
-      }
+      const checkoutProduct = resolveCheckoutProduct(options, ctx.body);
+      const { productId, planName, productName, groupId } = checkoutProduct;
 
       if (groupId) {
         const existing = await ctx.context.adapter.findMany({
@@ -152,10 +146,19 @@ export function createCheckout(options: ResolvedBachsOptions) {
         }
       }
 
-      const successUrl = ctx.body.successUrl ?? options.successUrl;
+      const successUrl = resolveTrustedRedirectUrl(
+        ctx.body.successUrl,
+        options.successUrl,
+        options.successUrl,
+      );
       if (!successUrl) {
         throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.MISSING_SUCCESS_URL);
       }
+      const cancelUrl = resolveTrustedRedirectUrl(
+        ctx.body.cancelUrl,
+        options.cancelUrl,
+        options.cancelUrl ?? options.successUrl,
+      );
       if (!user.email) {
         throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.MISSING_EMAIL);
       }
@@ -167,9 +170,12 @@ export function createCheckout(options: ResolvedBachsOptions) {
         name: user.name?.trim() || user.email,
       });
 
-      const idempotencyKey =
-        ctx.body.idempotencyKey ??
-        `checkout-${referenceId}-${ctx.body.reference ?? planName ?? productName ?? productId}-${Date.now()}`;
+      const idempotencyKey = operationIdempotencyKey(
+        "checkout",
+        user.id,
+        ctx.body.idempotencyKey,
+        { id: referenceId, type: referenceType },
+      );
 
       try {
         const checkout = await options.bachsClient.checkoutSessions.create(
@@ -178,7 +184,7 @@ export function createCheckout(options: ResolvedBachsOptions) {
             customer,
             customer_creation: "if_required",
             success_url: successUrl,
-            cancel_url: ctx.body.cancelUrl ?? options.cancelUrl ?? null,
+            cancel_url: cancelUrl ?? null,
             reference: ctx.body.reference ?? null,
             metadata: {
               better_auth_user_id: user.id,
@@ -239,14 +245,13 @@ export function upgradeSubscription(options: ResolvedBachsOptions) {
         reference: z.string().optional(),
         successUrl: z.string().url().optional(),
         cancelUrl: z.string().url().nullable().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
         ...referenceBody,
       }),
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      const plan = findPlan(options, ctx.body.plan);
-      if (!plan) throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.PLAN_NOT_FOUND);
+      const plan = resolveCheckoutProduct(options, { plan: ctx.body.plan });
 
       const user = ctx.context.session.user;
       const referenceType = (ctx.body.referenceType ?? "user") as BillingReferenceType;
@@ -272,12 +277,30 @@ export function upgradeSubscription(options: ResolvedBachsOptions) {
             "user") as BillingReferenceType,
           userId: user.id,
         });
+        if (
+          (local as { referenceId: string }).referenceId !== referenceId ||
+          ((local as { referenceType?: string }).referenceType ?? "user") !== referenceType
+        ) {
+          throw new APIError("FORBIDDEN", {
+            code: "SUBSCRIPTION_REFERENCE_MISMATCH",
+            message: "The subscription does not belong to the requested billing reference.",
+          });
+        }
       }
 
-      const successUrl = ctx.body.successUrl ?? options.successUrl;
+      const successUrl = resolveTrustedRedirectUrl(
+        ctx.body.successUrl,
+        options.successUrl,
+        options.successUrl,
+      );
       if (!successUrl) {
         throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.MISSING_SUCCESS_URL);
       }
+      const cancelUrl = resolveTrustedRedirectUrl(
+        ctx.body.cancelUrl,
+        options.cancelUrl,
+        options.cancelUrl ?? options.successUrl,
+      );
       if (!user.email) {
         throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.MISSING_EMAIL);
       }
@@ -289,9 +312,12 @@ export function upgradeSubscription(options: ResolvedBachsOptions) {
         name: user.name?.trim() || user.email,
       });
 
-      const idempotencyKey =
-        ctx.body.idempotencyKey ??
-        `upgrade-${referenceId}-${plan.name}-${Date.now()}`;
+      const idempotencyKey = operationIdempotencyKey(
+        "upgrade",
+        user.id,
+        ctx.body.idempotencyKey,
+        { id: referenceId, type: referenceType },
+      );
 
       try {
         const checkout = await options.bachsClient.checkoutSessions.create(
@@ -300,15 +326,15 @@ export function upgradeSubscription(options: ResolvedBachsOptions) {
             customer,
             customer_creation: "if_required",
             success_url: successUrl,
-            cancel_url: ctx.body.cancelUrl ?? options.cancelUrl ?? null,
+            cancel_url: cancelUrl ?? null,
             reference: ctx.body.reference ?? null,
             metadata: {
               better_auth_user_id: user.id,
               reference_id: referenceId,
               reference_type: referenceType,
-              plan: plan.name,
+              plan: plan.planName ?? null,
               product: null,
-              group: plan.group ?? null,
+              group: plan.groupId ?? null,
               upgrade_from: ctx.body.subscriptionId ?? null,
             },
           },
@@ -323,13 +349,13 @@ export function upgradeSubscription(options: ResolvedBachsOptions) {
             referenceType,
             userId: user.id,
             reference: checkout.reference,
-            plan: plan.name,
+            plan: plan.planName,
             product: null,
             status: checkout.status,
             checkoutUrl: checkout.checkout_url,
             metadata: JSON.stringify({
-              plan: plan.name,
-              group: plan.group,
+              plan: plan.planName,
+              group: plan.groupId,
               upgradeFrom: ctx.body.subscriptionId ?? null,
             }),
             createdAt: new Date(),
@@ -343,7 +369,7 @@ export function upgradeSubscription(options: ResolvedBachsOptions) {
           status: checkout.status,
           expiresAt: checkout.expires_at,
           reference: checkout.reference,
-          plan: plan.name,
+          plan: plan.planName,
           product: null,
           referenceId,
           referenceType,
@@ -365,18 +391,19 @@ export function getCheckout(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      const local = await ctx.context.adapter.findOne({
-        model: "bachsCheckout",
-        where: [{ field: "checkoutId", value: ctx.query.checkoutId }],
+      const local = requireLocalBillingResource(
+        await ctx.context.adapter.findOne({
+          model: "bachsCheckout",
+          where: [{ field: "checkoutId", value: ctx.query.checkoutId }],
+        }),
+        BACHS_ERROR_CODES.CHECKOUT_NOT_FOUND,
+      );
+      await authorizeBillingReference(ctx, options, {
+        referenceId: (local as { referenceId: string }).referenceId,
+        referenceType: ((local as { referenceType?: string }).referenceType ??
+          "user") as BillingReferenceType,
+        userId: ctx.context.session.user.id,
       });
-      if (local) {
-        await authorizeBillingReference(ctx, options, {
-          referenceId: (local as { referenceId: string }).referenceId,
-          referenceType: ((local as { referenceType?: string }).referenceType ??
-            "user") as BillingReferenceType,
-          userId: ctx.context.session.user.id,
-        });
-      }
 
       const checkout = await options.bachsClient.checkoutSessions.get(
         ctx.query.checkoutId,
@@ -402,7 +429,7 @@ export function createPortalSession(options: ResolvedBachsOptions) {
     {
       method: "POST",
       body: z.object({
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
         ...referenceBody,
       }),
       use: [sessionMiddleware],
@@ -422,8 +449,12 @@ export function createPortalSession(options: ResolvedBachsOptions) {
         const portal = await options.bachsClient.customerPortal.createSession(
           customerId,
           {
-            idempotencyKey:
-              ctx.body.idempotencyKey ?? `portal-${referenceId}-${Date.now()}`,
+            idempotencyKey: operationIdempotencyKey(
+              "portal",
+              user.id,
+              ctx.body.idempotencyKey,
+              { id: referenceId, type: referenceType },
+            ),
           },
         );
         return ctx.json({ id: portal.id, portalUrl: portal.url });
@@ -440,7 +471,7 @@ export function listPlans(options: ResolvedBachsOptions) {
     { method: "GET", use: [sessionMiddleware] },
     async (ctx) =>
       ctx.json({
-        plans: options.subscription?.plans ?? [],
+        plans: getPublicPlans(options),
         enabled: options.subscription?.enabled !== false,
       }),
   );
@@ -450,7 +481,7 @@ export function listProducts(options: ResolvedBachsOptions) {
   return createAuthEndpoint(
     "/bachs/list-products",
     { method: "GET", use: [sessionMiddleware] },
-    async (ctx) => ctx.json({ products: options.products?.products ?? [] }),
+    async (ctx) => ctx.json({ products: getPublicProducts(options) }),
   );
 }
 
@@ -471,6 +502,7 @@ export function listCatalogProducts(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
+      await assertMerchant(ctx, options);
       const includeArchived =
         ctx.query?.includeArchived === true ||
         ctx.query?.includeArchived === "true";
@@ -503,6 +535,7 @@ export function getCatalogProduct(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
+      await assertMerchant(ctx, options);
       const product = await options.bachsClient.products.get(ctx.query.productId);
       return ctx.json({
         id: product.id,
@@ -511,7 +544,6 @@ export function getCatalogProduct(options: ResolvedBachsOptions) {
         status: product.status ?? null,
         price: product.price,
         billingCycle: product.billing_cycle ?? null,
-        metadata: product.metadata ?? null,
         createdAt: product.created_at ?? null,
       });
     },
@@ -712,7 +744,7 @@ export function cancelSubscription(options: ResolvedBachsOptions) {
         subscriptionId: z.string().min(1),
         cancelAtPeriodEnd: z.boolean().optional(),
         reason: z.string().nullable().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
       }),
       use: [sessionMiddleware],
     },
@@ -739,9 +771,12 @@ export function cancelSubscription(options: ResolvedBachsOptions) {
             reason: ctx.body.reason ?? null,
           },
           {
-            idempotencyKey:
-              ctx.body.idempotencyKey ??
-              `cancel-${ctx.context.session.user.id}-${ctx.body.subscriptionId}`,
+            idempotencyKey: operationIdempotencyKey(
+              "cancel",
+              ctx.context.session.user.id,
+              ctx.body.idempotencyKey,
+              { id: ctx.body.subscriptionId, type: "user" },
+            ),
           },
         );
 
@@ -813,18 +848,19 @@ export function getPayment(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      const local = await ctx.context.adapter.findOne({
-        model: "bachsPayment",
-        where: [{ field: "paymentId", value: ctx.query.paymentId }],
+      const local = requireLocalBillingResource(
+        await ctx.context.adapter.findOne({
+          model: "bachsPayment",
+          where: [{ field: "paymentId", value: ctx.query.paymentId }],
+        }),
+        BACHS_ERROR_CODES.PAYMENT_NOT_FOUND,
+      );
+      await authorizeBillingReference(ctx, options, {
+        referenceId: (local as { referenceId: string }).referenceId,
+        referenceType: ((local as { referenceType?: string }).referenceType ??
+          "user") as BillingReferenceType,
+        userId: ctx.context.session.user.id,
       });
-      if (local) {
-        await authorizeBillingReference(ctx, options, {
-          referenceId: (local as { referenceId: string }).referenceId,
-          referenceType: ((local as { referenceType?: string }).referenceType ??
-            "user") as BillingReferenceType,
-          userId: ctx.context.session.user.id,
-        });
-      }
 
       const remote = await options.bachsClient.payments.get(ctx.query.paymentId);
       return ctx.json({
@@ -922,10 +958,10 @@ export function getConfig(options: ResolvedBachsOptions) {
   );
 }
 
-function assertMerchant(options: ResolvedBachsOptions) {
-  if (!options.merchant) {
-    throw new APIError("FORBIDDEN", BACHS_ERROR_CODES.MERCHANT_DISABLED);
-  }
+async function assertMerchant(ctx: GenericEndpointContext, options: ResolvedBachsOptions) {
+  const userId = ctx.context.session?.user?.id;
+  if (!userId) throw new APIError("UNAUTHORIZED", BACHS_ERROR_CODES.UNAUTHORIZED);
+  await assertMerchantAccess(options, ctx, userId);
 }
 
 export function getBalance(options: ResolvedBachsOptions) {
@@ -933,7 +969,7 @@ export function getBalance(options: ResolvedBachsOptions) {
     "/bachs/get-balance",
     { method: "GET", use: [sessionMiddleware] },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(await options.bachsClient.balances.get());
     },
   );
@@ -948,7 +984,7 @@ export function listBanks(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(
         await options.bachsClient.banks.list({ country: ctx.query?.country }),
       );
@@ -969,7 +1005,7 @@ export function resolveBankAccount(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       try {
         const resolved = await options.bachsClient.banks.resolveAccount({
           account_number: ctx.body.accountNumber,
@@ -1006,12 +1042,12 @@ export function createProduct(options: ResolvedBachsOptions) {
         billingInterval: z.enum(["day", "week", "month", "year"]).optional(),
         billingFrequency: z.number().int().positive().optional(),
         metadata: z.record(z.string(), z.unknown()).nullable().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
       }),
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       const currency = ctx.body.currency as import("@bachs/sdk").ProductCurrency;
       const priceType = ctx.body.priceType ?? "fixed";
       if (priceType === "fixed" && !ctx.body.amount) {
@@ -1049,9 +1085,11 @@ export function createProduct(options: ResolvedBachsOptions) {
               : null,
           },
           {
-            idempotencyKey:
-              ctx.body.idempotencyKey ??
-              `product-${ctx.context.session.user.id}-${Date.now()}`,
+            idempotencyKey: operationIdempotencyKey(
+              "product",
+              ctx.context.session.user.id,
+              ctx.body.idempotencyKey,
+            ),
           },
         );
         return ctx.json({
@@ -1099,7 +1137,7 @@ export function listRemotePayments(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(
         await options.bachsClient.payments.list({
           limit: ctx.query?.limit,
@@ -1125,7 +1163,7 @@ export function listPayoutDestinations(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(
         await options.bachsClient.payoutDestinations.list({
           limit: ctx.query?.limit,
@@ -1145,7 +1183,7 @@ export function getPayoutDestination(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(
         await options.bachsClient.payoutDestinations.get(ctx.query.destinationId),
       );
@@ -1169,12 +1207,12 @@ export function createPayoutDestination(options: ResolvedBachsOptions) {
         mobileProvider: z.string().optional(),
         walletAddress: z.string().optional(),
         network: z.string().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
       }),
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       try {
         return ctx.json(
           await options.bachsClient.payoutDestinations.create(
@@ -1191,9 +1229,11 @@ export function createPayoutDestination(options: ResolvedBachsOptions) {
               network: ctx.body.network ?? null,
             },
             {
-              idempotencyKey:
-                ctx.body.idempotencyKey ??
-                `payout-dest-${ctx.context.session.user.id}-${Date.now()}`,
+              idempotencyKey: operationIdempotencyKey(
+                "payout-destination",
+                ctx.context.session.user.id,
+                ctx.body.idempotencyKey,
+              ),
             },
           ),
         );
@@ -1214,12 +1254,12 @@ export function createPayoutQuote(options: ResolvedBachsOptions) {
         toCurrency: z.string().min(3),
         amount: z.string().min(1),
         payoutMethod: z.string().nullable().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
       }),
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       try {
         const quote = await options.bachsClient.payoutQuotes.create(
           {
@@ -1229,9 +1269,11 @@ export function createPayoutQuote(options: ResolvedBachsOptions) {
             payout_method: ctx.body.payoutMethod ?? null,
           },
           {
-            idempotencyKey:
-              ctx.body.idempotencyKey ??
-              `payout-quote-${ctx.context.session.user.id}-${Date.now()}`,
+            idempotencyKey: operationIdempotencyKey(
+              "payout-quote",
+              ctx.context.session.user.id,
+              ctx.body.idempotencyKey,
+            ),
           },
         );
         return ctx.json({
@@ -1260,12 +1302,12 @@ export function createPayout(options: ResolvedBachsOptions) {
         amount: z.string().optional(),
         quoteId: z.string().optional(),
         reference: z.string().nullable().optional(),
-        idempotencyKey: z.string().min(1).optional(),
+        idempotencyKey: idempotencyKeySchema,
       }),
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       if (!ctx.body.amount && !ctx.body.quoteId) {
         throw new APIError("BAD_REQUEST", BACHS_ERROR_CODES.PAYOUT_AMOUNT_REQUIRED);
       }
@@ -1283,9 +1325,11 @@ export function createPayout(options: ResolvedBachsOptions) {
                 reference: ctx.body.reference ?? null,
               }) as Parameters<typeof options.bachsClient.payouts.create>[0],
           {
-            idempotencyKey:
-              ctx.body.idempotencyKey ??
-              `payout-${ctx.context.session.user.id}-${Date.now()}`,
+            idempotencyKey: operationIdempotencyKey(
+              "payout",
+              ctx.context.session.user.id,
+              ctx.body.idempotencyKey,
+            ),
           },
         );
         return ctx.json({
@@ -1315,7 +1359,7 @@ export function listPayouts(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(
         await options.bachsClient.payouts.list({
           limit: ctx.query?.limit,
@@ -1335,7 +1379,7 @@ export function getPayout(options: ResolvedBachsOptions) {
       use: [sessionMiddleware],
     },
     async (ctx) => {
-      assertMerchant(options);
+      await assertMerchant(ctx, options);
       return ctx.json(await options.bachsClient.payouts.get(ctx.query.payoutId));
     },
   );
@@ -1367,7 +1411,7 @@ export function bachsWebhook(options: ResolvedBachsOptions) {
         throw err;
       }
 
-      const existing = await ctx.context.adapter.findOne({
+      let existing = await ctx.context.adapter.findOne({
         model: "bachsWebhookEvent",
         where: [{ field: "eventId", value: event.id }],
       });
@@ -1376,181 +1420,223 @@ export function bachsWebhook(options: ResolvedBachsOptions) {
       }
 
       if (!existing) {
-        await ctx.context.adapter.create({
-          model: "bachsWebhookEvent",
-          data: {
-            eventId: event.id,
-            eventType: event.type,
-            payload: rawBody,
-            status: "received",
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-        });
-      }
-
-      const data = event.data;
-      const userId = extractUserId(data);
-      const customerId = extractCustomerId(data);
-      const { referenceId, referenceType } = extractReference(data);
-      const resolvedReferenceId = referenceId ?? userId;
-
-      if (
-        options.createCustomerOnCheckout &&
-        resolvedReferenceId &&
-        customerId
-      ) {
-        const existingCustomer = await ctx.context.adapter.findOne({
-          model: "bachsCustomer",
-          where: [
-            { field: "referenceId", value: resolvedReferenceId },
-            { field: "referenceType", value: referenceType },
-          ],
-        });
-        if (!existingCustomer) {
+        try {
           await ctx.context.adapter.create({
-            model: "bachsCustomer",
+            model: "bachsWebhookEvent",
             data: {
-              referenceId: resolvedReferenceId,
-              referenceType,
-              customerId,
-              email:
-                typeof (data.customer as { email?: string } | undefined)?.email ===
-                "string"
-                  ? (data.customer as { email: string }).email
-                  : null,
+              eventId: event.id,
+              eventType: event.type,
+              payload: JSON.stringify({ id: event.id, type: event.type }),
+              status: "received",
+              leaseExpiresAt: null,
               createdAt: new Date(),
               updatedAt: new Date(),
             },
           });
-        } else {
-          await ctx.context.adapter.update({
-            model: "bachsCustomer",
-            where: [
-              { field: "referenceId", value: resolvedReferenceId },
-              { field: "referenceType", value: referenceType },
-            ],
-            update: { customerId, updatedAt: new Date() },
+        } catch (error) {
+          existing = await ctx.context.adapter.findOne({
+            model: "bachsWebhookEvent",
+            where: [{ field: "eventId", value: event.id }],
           });
+          if (!existing) throw error;
+          if ((existing as { status: string }).status === "processed") {
+            return ctx.json({ received: true, duplicate: true, id: event.id });
+          }
         }
       }
 
-      if (event.type === "checkout.completed" && typeof data.checkout_id === "string") {
+      const claimed = await claimWebhookEvent(ctx.context.adapter, event.id);
+      if (!claimed) {
+        throw new APIError("INTERNAL_SERVER_ERROR", BACHS_ERROR_CODES.WEBHOOK_IN_PROGRESS);
+      }
+
+      try {
+        const database = ctx.context.adapter;
+        await database.transaction(async (adapter) => {
+          const data = event.data;
+          const userId = extractUserId(data);
+          const customerId = extractCustomerId(data);
+          const { referenceId, referenceType } = extractReference(data);
+          const resolvedReferenceId = referenceId ?? userId;
+
+          if (
+            options.createCustomerOnCheckout &&
+            resolvedReferenceId &&
+            customerId
+          ) {
+            const existingCustomer = await adapter.findOne({
+              model: "bachsCustomer",
+              where: [
+                { field: "referenceId", value: resolvedReferenceId },
+                { field: "referenceType", value: referenceType },
+              ],
+            });
+            if (!existingCustomer) {
+              await adapter.create({
+                model: "bachsCustomer",
+                data: {
+                  referenceId: resolvedReferenceId,
+                  referenceType,
+                  customerId,
+                  email:
+                    typeof (data.customer as { email?: string } | undefined)?.email ===
+                    "string"
+                      ? (data.customer as { email: string }).email
+                      : null,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              });
+            } else {
+              await adapter.update({
+                model: "bachsCustomer",
+                where: [
+                  { field: "referenceId", value: resolvedReferenceId },
+                  { field: "referenceType", value: referenceType },
+                ],
+                update: { customerId, updatedAt: new Date() },
+              });
+            }
+          }
+
+          if (event.type === "checkout.completed" && typeof data.checkout_id === "string") {
+            await adapter.update({
+              model: "bachsCheckout",
+              where: [{ field: "checkoutId", value: data.checkout_id }],
+              update: { status: "completed", updatedAt: new Date() },
+            });
+          }
+
+          const paymentId =
+            typeof data.payment_id === "string"
+              ? data.payment_id
+              : typeof data.id === "string" && event.type.includes("payment")
+                ? data.id
+                : null;
+
+          if (
+            paymentId &&
+            resolvedReferenceId &&
+            (event.type === "collection.succeeded" ||
+              event.type === "checkout.completed" ||
+              event.type.startsWith("payment."))
+          ) {
+            const existingPayment = await adapter.findOne({
+              model: "bachsPayment",
+              where: [{ field: "paymentId", value: paymentId }],
+            });
+            const paymentPayload = {
+              paymentId,
+              referenceId: resolvedReferenceId,
+              referenceType,
+              userId: userId ?? resolvedReferenceId,
+              checkoutId: typeof data.checkout_id === "string" ? data.checkout_id : null,
+              subscriptionId:
+                typeof data.subscription_id === "string" ? data.subscription_id : null,
+              amount: typeof data.amount === "string" ? data.amount : null,
+              currency: typeof data.currency === "string" ? data.currency : null,
+              status: typeof data.status === "string" ? data.status : "succeeded",
+              reference: typeof data.reference === "string" ? data.reference : null,
+              updatedAt: new Date(),
+            };
+            if (existingPayment) {
+              await adapter.update({
+                model: "bachsPayment",
+                where: [{ field: "paymentId", value: paymentId }],
+                update: paymentPayload,
+              });
+            } else {
+              await adapter.create({
+                model: "bachsPayment",
+                data: { ...paymentPayload, createdAt: new Date() },
+              });
+            }
+          }
+
+          if (
+            event.type.startsWith("customer.subscription.") &&
+            typeof data.id === "string" &&
+            resolvedReferenceId
+          ) {
+            const plan =
+              data.metadata && typeof data.metadata === "object"
+                ? ((data.metadata as Record<string, unknown>).plan as string | undefined)
+                : undefined;
+            const groupId =
+              data.metadata && typeof data.metadata === "object"
+                ? ((data.metadata as Record<string, unknown>).group as string | undefined)
+                : undefined;
+
+            const existingSub = await adapter.findOne({
+              model: "bachsSubscription",
+              where: [{ field: "subscriptionId", value: data.id }],
+            });
+
+            const payload = {
+              subscriptionId: data.id,
+              referenceId: resolvedReferenceId,
+              referenceType,
+              userId: userId ?? resolvedReferenceId,
+              customerId: customerId ?? "",
+              plan: plan ?? null,
+              productId: typeof data.product_id === "string" ? data.product_id : null,
+              status: typeof data.status === "string" ? data.status : "unknown",
+              groupId: groupId ?? null,
+              cancelAtPeriodEnd: Boolean(data.cancel_at_period_end),
+              currentPeriodEnd:
+                typeof data.current_period_end === "string"
+                  ? new Date(data.current_period_end)
+                  : null,
+              updatedAt: new Date(),
+            };
+
+            if (existingSub) {
+              await adapter.update({
+                model: "bachsSubscription",
+                where: [{ field: "subscriptionId", value: data.id }],
+                update: payload,
+              });
+            } else {
+              await adapter.create({
+                model: "bachsSubscription",
+                data: { ...payload, createdAt: new Date() },
+              });
+            }
+          }
+
+        });
+
+        if (options.onEvent) await options.onEvent(event);
+
         await ctx.context.adapter.update({
-          model: "bachsCheckout",
-          where: [{ field: "checkoutId", value: data.checkout_id }],
-          update: { status: "completed", updatedAt: new Date() },
+          model: "bachsWebhookEvent",
+          where: [{ field: "eventId", value: event.id }],
+          update: {
+            status: "processed",
+            leaseExpiresAt: null,
+            processedAt: new Date(),
+            updatedAt: new Date(),
+          },
         });
-      }
-
-      const paymentId =
-        typeof data.payment_id === "string"
-          ? data.payment_id
-          : typeof data.id === "string" && event.type.includes("payment")
-            ? data.id
-            : null;
-
-      if (
-        paymentId &&
-        resolvedReferenceId &&
-        (event.type === "collection.succeeded" ||
-          event.type === "checkout.completed" ||
-          event.type.startsWith("payment."))
-      ) {
-        const existingPayment = await ctx.context.adapter.findOne({
-          model: "bachsPayment",
-          where: [{ field: "paymentId", value: paymentId }],
-        });
-        const paymentPayload = {
-          paymentId,
-          referenceId: resolvedReferenceId,
-          referenceType,
-          userId: userId ?? resolvedReferenceId,
-          checkoutId: typeof data.checkout_id === "string" ? data.checkout_id : null,
-          subscriptionId:
-            typeof data.subscription_id === "string" ? data.subscription_id : null,
-          amount: typeof data.amount === "string" ? data.amount : null,
-          currency: typeof data.currency === "string" ? data.currency : null,
-          status: typeof data.status === "string" ? data.status : "succeeded",
-          reference: typeof data.reference === "string" ? data.reference : null,
-          updatedAt: new Date(),
-        };
-        if (existingPayment) {
+      } catch (error) {
+        try {
           await ctx.context.adapter.update({
-            model: "bachsPayment",
-            where: [{ field: "paymentId", value: paymentId }],
-            update: paymentPayload,
+            model: "bachsWebhookEvent",
+            where: [
+              { field: "eventId", value: event.id },
+              { field: "status", value: "processing" },
+            ],
+            update: {
+              status: "received",
+              leaseExpiresAt: null,
+              updatedAt: new Date(),
+            },
           });
-        } else {
-          await ctx.context.adapter.create({
-            model: "bachsPayment",
-            data: { ...paymentPayload, createdAt: new Date() },
-          });
+        } catch {
+          // Keep the original processing error; the lease permits later recovery.
         }
+        throw error;
       }
-
-      if (
-        event.type.startsWith("customer.subscription.") &&
-        typeof data.id === "string" &&
-        resolvedReferenceId
-      ) {
-        const plan =
-          data.metadata && typeof data.metadata === "object"
-            ? ((data.metadata as Record<string, unknown>).plan as string | undefined)
-            : undefined;
-        const groupId =
-          data.metadata && typeof data.metadata === "object"
-            ? ((data.metadata as Record<string, unknown>).group as string | undefined)
-            : undefined;
-
-        const existingSub = await ctx.context.adapter.findOne({
-          model: "bachsSubscription",
-          where: [{ field: "subscriptionId", value: data.id }],
-        });
-
-        const payload = {
-          subscriptionId: data.id,
-          referenceId: resolvedReferenceId,
-          referenceType,
-          userId: userId ?? resolvedReferenceId,
-          customerId: customerId ?? "",
-          plan: plan ?? null,
-          productId: typeof data.product_id === "string" ? data.product_id : null,
-          status: typeof data.status === "string" ? data.status : "unknown",
-          groupId: groupId ?? null,
-          cancelAtPeriodEnd: Boolean(data.cancel_at_period_end),
-          currentPeriodEnd:
-            typeof data.current_period_end === "string"
-              ? new Date(data.current_period_end)
-              : null,
-          updatedAt: new Date(),
-        };
-
-        if (existingSub) {
-          await ctx.context.adapter.update({
-            model: "bachsSubscription",
-            where: [{ field: "subscriptionId", value: data.id }],
-            update: payload,
-          });
-        } else {
-          await ctx.context.adapter.create({
-            model: "bachsSubscription",
-            data: { ...payload, createdAt: new Date() },
-          });
-        }
-      }
-
-      if (options.onEvent) await options.onEvent(event);
-
-      await ctx.context.adapter.update({
-        model: "bachsWebhookEvent",
-        where: [{ field: "eventId", value: event.id }],
-        update: {
-          status: "processed",
-          processedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
 
       return ctx.json({ received: true, id: event.id, type: event.type });
     },

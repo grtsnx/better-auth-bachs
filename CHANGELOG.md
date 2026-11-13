@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Require `authorizeMerchant` for merchant endpoints and protect live catalog reads with it
+- Allow checkout only for configured products; restrict client redirect overrides to the configured application origin
+- Require scoped idempotency keys for resource writes and require local ownership before remote billing reads
+- Claim webhook events with expiring leases and transact local state updates; store only event IDs and types
+- Add customer/reference uniqueness and billing lookup indexes
+- Upgrade Vitest to a patched version and update vulnerable transitive development dependencies
+
 ## 0.5.0
 
 - Add get catalog product, get customer, list checkouts, list remote subscriptions

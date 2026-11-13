@@ -4,6 +4,13 @@ import type { BachsPluginOptions } from "./types.js";
 
 const baseSchema = {
   bachsCustomer: {
+    indexes: [
+      {
+        name: "bachs_customer_reference_unique",
+        fields: ["referenceType", "referenceId"],
+        unique: true,
+      },
+    ],
     fields: {
       referenceId: { type: "string", required: true },
       referenceType: { type: "string", required: true },
@@ -14,6 +21,9 @@ const baseSchema = {
     },
   },
   bachsCheckout: {
+    indexes: [
+      { name: "bachs_checkout_reference_idx", fields: ["referenceType", "referenceId"] },
+    ],
     fields: {
       checkoutId: { type: "string", required: true, unique: true },
       referenceId: { type: "string", required: true },
@@ -30,6 +40,12 @@ const baseSchema = {
     },
   },
   bachsSubscription: {
+    indexes: [
+      {
+        name: "bachs_subscription_reference_idx",
+        fields: ["referenceType", "referenceId"],
+      },
+    ],
     fields: {
       subscriptionId: { type: "string", required: true, unique: true },
       referenceId: { type: "string", required: true },
@@ -48,6 +64,9 @@ const baseSchema = {
     },
   },
   bachsPayment: {
+    indexes: [
+      { name: "bachs_payment_reference_idx", fields: ["referenceType", "referenceId"] },
+    ],
     fields: {
       paymentId: { type: "string", required: true, unique: true },
       referenceId: { type: "string", required: true },
@@ -70,6 +89,7 @@ const baseSchema = {
       eventType: { type: "string", required: true },
       payload: { type: "string", required: true },
       status: { type: "string", required: true },
+      leaseExpiresAt: { type: "date", required: false },
       processedAt: { type: "date", required: false },
       createdAt: { type: "date", required: true, defaultValue: () => new Date() },
       updatedAt: { type: "date", required: true, defaultValue: () => new Date() },

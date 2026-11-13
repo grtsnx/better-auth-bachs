@@ -29,6 +29,10 @@ export const BACHS_ERROR_CODES = {
     code: "SUBSCRIPTION_NOT_FOUND",
     message: "Subscription not found.",
   },
+  CHECKOUT_NOT_FOUND: {
+    code: "CHECKOUT_NOT_FOUND",
+    message: "Checkout not found.",
+  },
   PAYMENT_NOT_FOUND: {
     code: "PAYMENT_NOT_FOUND",
     message: "Payment not found.",
@@ -40,6 +44,10 @@ export const BACHS_ERROR_CODES = {
   WEBHOOK_NOT_CONFIGURED: {
     code: "WEBHOOK_NOT_CONFIGURED",
     message: "webhookSecret is not configured on the Bachs plugin.",
+  },
+  WEBHOOK_IN_PROGRESS: {
+    code: "WEBHOOK_IN_PROGRESS",
+    message: "This webhook event is already being processed. Retry shortly.",
   },
   UNCERTAIN_WRITE: {
     code: "UNCERTAIN_WRITE",
@@ -53,6 +61,14 @@ export const BACHS_ERROR_CODES = {
   MERCHANT_DISABLED: {
     code: "MERCHANT_DISABLED",
     message: "Merchant endpoints are disabled. Set merchant: true to enable.",
+  },
+  MERCHANT_AUTHORIZATION_REQUIRED: {
+    code: "MERCHANT_AUTHORIZATION_REQUIRED",
+    message: "Merchant endpoints require an authorizeMerchant callback.",
+  },
+  MERCHANT_FORBIDDEN: {
+    code: "MERCHANT_FORBIDDEN",
+    message: "You are not authorized to access merchant operations.",
   },
   PAYOUT_AMOUNT_REQUIRED: {
     code: "PAYOUT_AMOUNT_REQUIRED",

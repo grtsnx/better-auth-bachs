@@ -72,7 +72,9 @@ export const auth = betterAuth({
         enabled: true,
         billingRoles: ["owner", "admin"], // default
       },
-      // merchant: true, // only if THIS app manages the Bachs merchant account
+      // Merchant routes fail closed unless your server-side admin check allows the user.
+      // merchant: true,
+      // authorizeMerchant: async (_ctx, userId) => isFinanceAdmin(userId),
       subscription: {
         enabled: true,
         plans: [
@@ -133,6 +135,8 @@ npx @better-auth/cli generate
 npx @better-auth/cli migrate
 ```
 
+The customer table now has a unique `(referenceType, referenceId)` index. If upgrading an existing installation, remove any duplicate `bachsCustomer` rows for the same reference before applying the migration.
+
 Tables: `bachsCustomer`, `bachsCheckout`, `bachsSubscription`, `bachsPayment`, `bachsWebhookEvent`.
 
 ### 7. Configure the Bachs webhook
@@ -182,11 +186,15 @@ Base path: `{BETTER_AUTH_URL}/api/auth` (or your auth basePath).
 #### `POST /bachs/create-checkout`
 
 Start hosted Bachs checkout for a plan or one-time product.
+Client-provided success and cancel URLs must use the same origin as a server-configured URL.
 
 ```ts
+// Generate once and reuse this value if you retry the same operation.
+const checkoutKey = crypto.randomUUID();
 const { data, error } = await authClient.bachs.createCheckout({
   plan: "pro", // or product: "credits_50" or productId: "prod_..."
   quantity: 1,
+  idempotencyKey: checkoutKey,
   reference: "order_123", // optional merchant reference
   successUrl: "https://your-app.com/billing/success",
   cancelUrl: "https://your-app.com/billing",
@@ -208,6 +216,7 @@ Checkout for a **new** plan (upgrade path). Optionally pass the subscription bei
 await authClient.bachs.upgradeSubscription({
   plan: "pro",
   subscriptionId: "sub_...", // optional
+  idempotencyKey: crypto.randomUUID(),
 });
 ```
 
@@ -251,7 +260,7 @@ await authClient.bachs.listProducts();
 
 #### `GET /bachs/list-catalog-products`
 
-Live products from the Bachs catalog.
+Live products from the Bachs catalog. This endpoint requires merchant authorization.
 
 ```ts
 await authClient.bachs.listCatalogProducts({
@@ -262,6 +271,8 @@ await authClient.bachs.listCatalogProducts({
 ```
 
 #### `GET /bachs/get-catalog-product`
+
+Requires merchant authorization and omits product metadata.
 
 ```ts
 await authClient.bachs.getCatalogProduct({ productId: "prod_..." });
@@ -301,7 +312,9 @@ const { data } = await authClient.bachs.billingStatus();
 Open the Bachs customer portal (requires a linked customer).
 
 ```ts
-const { data } = await authClient.bachs.createPortalSession({});
+const { data } = await authClient.bachs.createPortalSession({
+  idempotencyKey: crypto.randomUUID(),
+});
 if (data?.portalUrl) window.location.href = data.portalUrl;
 ```
 
@@ -341,6 +354,7 @@ await authClient.bachs.getSubscription({ subscriptionId: "sub_..." });
 ```ts
 await authClient.bachs.cancelSubscription({
   subscriptionId: "sub_...",
+  idempotencyKey: crypto.randomUUID(),
   cancelAtPeriodEnd: true, // default true
   reason: "too_expensive",
 });
@@ -376,17 +390,22 @@ Called by Bachs — not by your client. Verifies signature, dedupes by `event.id
 
 ## Merchant endpoints
 
-Enable on **both** sides:
+Enable on **both** sides and configure a server-side authorization callback:
 
 ```ts
 // server
-bachs({ merchant: true, bachsClient, ... })
+bachs({
+  merchant: true,
+  authorizeMerchant: async (_ctx, userId) => isFinanceAdmin(userId),
+  bachsClient,
+  ...
+})
 
 // client
 bachsClient({ merchant: true })
 ```
 
-Only enable this for apps that operate the Bachs merchant account (admin dashboards, internal tools). Do not expose merchant routes to end users in a multi-tenant SaaS without your own authorization layer.
+Merchant routes return `403` unless `authorizeMerchant` is configured and returns `true`. Use your app's trusted staff/admin role source; never authorize based on client-supplied fields. Only enable these routes for apps that operate the Bachs merchant account.
 
 ### Products
 
@@ -400,6 +419,7 @@ await authClient.bachs.createProduct({
   name: "Field Guide",
   currency: "USD",
   amount: "19.00",
+  idempotencyKey: crypto.randomUUID(),
 });
 
 // Recurring plan product
@@ -409,6 +429,7 @@ await authClient.bachs.createProduct({
   amount: "29.00",
   billingInterval: "month",
   billingFrequency: 1,
+  idempotencyKey: crypto.randomUUID(),
 });
 
 // Pay what you want
@@ -418,6 +439,7 @@ await authClient.bachs.createProduct({
   priceType: "custom",
   minimumAmount: "5.00",
   presetAmount: "10.00",
+  idempotencyKey: crypto.randomUUID(),
 });
 ```
 
@@ -460,6 +482,7 @@ const { data: dest } = await authClient.bachs.createPayoutDestination({
   accountNumber: "0123456789",
   bankCode: "058",
   accountName: "Acme Ltd",
+  idempotencyKey: crypto.randomUUID(),
 });
 
 await authClient.bachs.listPayoutDestinations();
@@ -469,11 +492,13 @@ const { data: quote } = await authClient.bachs.createPayoutQuote({
   fromCurrency: "USD",
   toCurrency: "NGN",
   amount: "100.00",
+  idempotencyKey: crypto.randomUUID(),
 });
 
 await authClient.bachs.createPayout({
   destination: dest.id,
   quoteId: quote.quoteId, // or amount: "100.00"
+  idempotencyKey: crypto.randomUUID(),
 });
 
 await authClient.bachs.listPayouts();
@@ -542,18 +567,21 @@ await authClient.bachs.getPayout({ payoutId: "..." });
 | `organization.enabled` | Enable org billing |
 | `organization.billingRoles` | Default `["owner","admin"]` |
 | `merchant` | Enable merchant endpoints (default `false`) |
+| `authorizeMerchant` | Required with `merchant: true`; authorize users through trusted server-side roles |
 | `createCustomerOnCheckout` | Persist `bachsCustomer` from webhooks (default `true`) |
-| `onEvent` | After a verified, non-duplicate webhook |
+| `onEvent` | Callback for a verified webhook event; may run again after a failed acknowledgement |
 | `schema` | Schema overrides for Better Auth migrations |
 
 ---
 
 ## Design notes
 
-- Clients send **plan** / **product** names; catalog ids stay on the server.
+- Clients should send **plan** / **product** names; a `productId` is accepted only when it matches a configured plan or product.
 - Never trust client-supplied money amounts for checkout — Bachs owns catalog prices.
 - Fulfil from **verified webhooks**, not from the success redirect alone.
 - Uncertain SDK writes return a conflict so you can reconcile before retrying with a new idempotency key.
+- Every client initiated resource write requires an idempotency key. Reuse the same key for retries of the same operation; the plugin scopes keys to the signed-in user and operation.
+- Webhook state updates run in a transaction when the Better Auth adapter supports transactions. A short database lease serializes concurrent deliveries; a failed callback may still be retried, so deduplicate fulfillment by `event.id`.
 - SDK coverage today: create/get/list products, checkout, subscriptions cancel/list/get, payments get/list, portal, balance, banks, payouts. Product update/archive are not in the Node SDK yet.
 
 Docs: [Bachs Node SDK](https://docs.bachs.io/sdks/node) · [Checkout](https://docs.bachs.io/guides/checkout/checkout-sessions) · [Products](https://docs.bachs.io/guides/products/overview) · [Webhooks](https://docs.bachs.io/guides/webhooks/overview)
