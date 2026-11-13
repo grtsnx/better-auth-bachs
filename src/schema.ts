@@ -1,0 +1,65 @@
+import type { BetterAuthPluginDBSchema } from "better-auth/db";
+import { mergeSchema } from "better-auth/db";
+import type { BachsPluginOptions } from "./types.js";
+
+const baseSchema = {
+  bachsCustomer: {
+    fields: {
+      referenceId: { type: "string", required: true },
+      referenceType: { type: "string", required: true }, // user
+      customerId: { type: "string", required: true },
+      email: { type: "string", required: false },
+      createdAt: { type: "date", required: true, defaultValue: () => new Date() },
+      updatedAt: { type: "date", required: true, defaultValue: () => new Date() },
+    },
+  },
+  bachsCheckout: {
+    fields: {
+      checkoutId: { type: "string", required: true, unique: true },
+      referenceId: { type: "string", required: true },
+      userId: { type: "string", required: true },
+      reference: { type: "string", required: false },
+      plan: { type: "string", required: false },
+      product: { type: "string", required: false },
+      status: { type: "string", required: true },
+      checkoutUrl: { type: "string", required: false },
+      metadata: { type: "string", required: false },
+      createdAt: { type: "date", required: true, defaultValue: () => new Date() },
+      updatedAt: { type: "date", required: true, defaultValue: () => new Date() },
+    },
+  },
+  bachsSubscription: {
+    fields: {
+      subscriptionId: { type: "string", required: true, unique: true },
+      referenceId: { type: "string", required: true },
+      userId: { type: "string", required: true },
+      customerId: { type: "string", required: true },
+      plan: { type: "string", required: false },
+      productId: { type: "string", required: false },
+      status: { type: "string", required: true },
+      groupId: { type: "string", required: false },
+      cancelAtPeriodEnd: { type: "boolean", required: false },
+      currentPeriodEnd: { type: "date", required: false },
+      metadata: { type: "string", required: false },
+      createdAt: { type: "date", required: true, defaultValue: () => new Date() },
+      updatedAt: { type: "date", required: true, defaultValue: () => new Date() },
+    },
+  },
+  bachsWebhookEvent: {
+    fields: {
+      eventId: { type: "string", required: true, unique: true },
+      eventType: { type: "string", required: true },
+      payload: { type: "string", required: true },
+      status: { type: "string", required: true },
+      processedAt: { type: "date", required: false },
+      createdAt: { type: "date", required: true, defaultValue: () => new Date() },
+      updatedAt: { type: "date", required: true, defaultValue: () => new Date() },
+    },
+  },
+} satisfies BetterAuthPluginDBSchema;
+
+export type BachsPluginSchema = typeof baseSchema;
+
+export function getSchema(options?: BachsPluginOptions) {
+  return mergeSchema(baseSchema, options?.schema);
+}
