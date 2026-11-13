@@ -6,7 +6,7 @@ const baseSchema = {
   bachsCustomer: {
     fields: {
       referenceId: { type: "string", required: true },
-      referenceType: { type: "string", required: true }, // user
+      referenceType: { type: "string", required: true },
       customerId: { type: "string", required: true },
       email: { type: "string", required: false },
       createdAt: { type: "date", required: true, defaultValue: () => new Date() },
@@ -17,6 +17,7 @@ const baseSchema = {
     fields: {
       checkoutId: { type: "string", required: true, unique: true },
       referenceId: { type: "string", required: true },
+      referenceType: { type: "string", required: true },
       userId: { type: "string", required: true },
       reference: { type: "string", required: false },
       plan: { type: "string", required: false },
@@ -32,6 +33,7 @@ const baseSchema = {
     fields: {
       subscriptionId: { type: "string", required: true, unique: true },
       referenceId: { type: "string", required: true },
+      referenceType: { type: "string", required: true },
       userId: { type: "string", required: true },
       customerId: { type: "string", required: true },
       plan: { type: "string", required: false },
@@ -40,6 +42,23 @@ const baseSchema = {
       groupId: { type: "string", required: false },
       cancelAtPeriodEnd: { type: "boolean", required: false },
       currentPeriodEnd: { type: "date", required: false },
+      metadata: { type: "string", required: false },
+      createdAt: { type: "date", required: true, defaultValue: () => new Date() },
+      updatedAt: { type: "date", required: true, defaultValue: () => new Date() },
+    },
+  },
+  bachsPayment: {
+    fields: {
+      paymentId: { type: "string", required: true, unique: true },
+      referenceId: { type: "string", required: true },
+      referenceType: { type: "string", required: true },
+      userId: { type: "string", required: true },
+      checkoutId: { type: "string", required: false },
+      subscriptionId: { type: "string", required: false },
+      amount: { type: "string", required: false },
+      currency: { type: "string", required: false },
+      status: { type: "string", required: true },
+      reference: { type: "string", required: false },
       metadata: { type: "string", required: false },
       createdAt: { type: "date", required: true, defaultValue: () => new Date() },
       updatedAt: { type: "date", required: true, defaultValue: () => new Date() },

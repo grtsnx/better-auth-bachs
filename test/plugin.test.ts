@@ -14,6 +14,7 @@ describe("better-auth-bachs", () => {
       products: {
         products: [{ name: "credits", productId: "prod_credits" }],
       },
+      organization: { enabled: true },
     });
 
     expect(plugin.id).toBe("bachs");
@@ -21,10 +22,24 @@ describe("better-auth-bachs", () => {
     expect(plugin.schema?.bachsCustomer).toBeTruthy();
     expect(plugin.schema?.bachsSubscription).toBeTruthy();
     expect(plugin.schema?.bachsCheckout).toBeTruthy();
+    expect(plugin.schema?.bachsPayment).toBeTruthy();
     expect(plugin.schema?.bachsWebhookEvent).toBeTruthy();
-    expect(plugin.endpoints.createCheckout).toBeTypeOf("function");
-    expect(plugin.endpoints.bachsWebhook).toBeTypeOf("function");
+    expect(plugin.endpoints?.createCheckout).toBeTypeOf("function");
+    expect(plugin.endpoints?.upgradeSubscription).toBeTypeOf("function");
+    expect(plugin.endpoints?.listPayments).toBeTypeOf("function");
+    expect(plugin.endpoints?.bachsWebhook).toBeTypeOf("function");
+    expect(plugin.endpoints?.getBalance).toBeUndefined();
     expect(BACHS_ERROR_CODES.PLAN_NOT_FOUND.code).toBe("PLAN_NOT_FOUND");
+  });
+
+  it("registers merchant endpoints when merchant is enabled", () => {
+    const plugin = bachs({
+      apiKey: "sk_sandbox_test_key_for_plugin_unit_tests_only",
+      merchant: true,
+    });
+    expect(plugin.endpoints?.getBalance).toBeTypeOf("function");
+    expect(plugin.endpoints?.createPayout).toBeTypeOf("function");
+    expect(plugin.options.merchant).toBe(true);
   });
 
   it("accepts an injected @bachs/sdk client", () => {
@@ -36,7 +51,7 @@ describe("better-auth-bachs", () => {
   });
 
   it("creates a matching client plugin", () => {
-    const client = bachsClient({ subscription: true });
+    const client = bachsClient({ subscription: true, merchant: true });
     expect(client.id).toBe("bachs");
     expect(client.getActions).toBeTypeOf("function");
   });

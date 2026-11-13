@@ -7,13 +7,27 @@ import {
   billingStatus,
   cancelSubscription,
   createCheckout,
+  createPayout,
+  createPayoutDestination,
+  createPayoutQuote,
   createPortalSession,
+  createProduct,
+  getBalance,
   getCheckout,
   getConfig,
+  getPayment,
+  getPayout,
   getSubscription,
+  listBanks,
+  listCatalogProducts,
+  listPayments,
+  listPayoutDestinations,
+  listPayouts,
   listPlans,
   listProducts,
   listSubscriptions,
+  resolveBankAccount,
+  upgradeSubscription,
 } from "./routes.js";
 import type { BachsPluginOptions } from "./types.js";
 import { PACKAGE_VERSION } from "./version.js";
@@ -25,20 +39,6 @@ declare module "@better-auth/core" {
     };
   }
 }
-
-type BachsPluginEndpoints = {
-  createCheckout: ReturnType<typeof createCheckout>;
-  getCheckout: ReturnType<typeof getCheckout>;
-  createPortalSession: ReturnType<typeof createPortalSession>;
-  listPlans: ReturnType<typeof listPlans>;
-  listProducts: ReturnType<typeof listProducts>;
-  listSubscriptions: ReturnType<typeof listSubscriptions>;
-  getSubscription: ReturnType<typeof getSubscription>;
-  cancelSubscription: ReturnType<typeof cancelSubscription>;
-  billingStatus: ReturnType<typeof billingStatus>;
-  getConfig: ReturnType<typeof getConfig>;
-  bachsWebhook: ReturnType<typeof bachsWebhook>;
-};
 
 /**
  * Better Auth plugin for Bachs payments.
@@ -71,19 +71,38 @@ type BachsPluginEndpoints = {
 export const bachs = (options: BachsPluginOptions = {}) => {
   const resolved = resolveOptions(options);
 
-  const endpoints = {
+  const endpoints: BetterAuthPlugin["endpoints"] = {
     createCheckout: createCheckout(resolved),
+    upgradeSubscription: upgradeSubscription(resolved),
     getCheckout: getCheckout(resolved),
     createPortalSession: createPortalSession(resolved),
     listPlans: listPlans(resolved),
     listProducts: listProducts(resolved),
+    listCatalogProducts: listCatalogProducts(resolved),
     listSubscriptions: listSubscriptions(resolved),
     getSubscription: getSubscription(resolved),
     cancelSubscription: cancelSubscription(resolved),
-    billingStatus: billingStatus(),
+    listPayments: listPayments(resolved),
+    getPayment: getPayment(resolved),
+    billingStatus: billingStatus(resolved),
     getConfig: getConfig(resolved),
     bachsWebhook: bachsWebhook(resolved),
-  } satisfies BachsPluginEndpoints;
+  };
+
+  if (resolved.merchant) {
+    Object.assign(endpoints, {
+      getBalance: getBalance(resolved),
+      listBanks: listBanks(resolved),
+      resolveBankAccount: resolveBankAccount(resolved),
+      createProduct: createProduct(resolved),
+      listPayoutDestinations: listPayoutDestinations(resolved),
+      createPayoutDestination: createPayoutDestination(resolved),
+      createPayoutQuote: createPayoutQuote(resolved),
+      createPayout: createPayout(resolved),
+      listPayouts: listPayouts(resolved),
+      getPayout: getPayout(resolved),
+    });
+  }
 
   return {
     id: "bachs",
@@ -102,7 +121,12 @@ export const bachs = (options: BachsPluginOptions = {}) => {
   } satisfies BetterAuthPlugin;
 };
 
-export type { BachsPluginOptions, BachsPlan, BachsOneTimeProduct } from "./types.js";
+export type {
+  BachsPluginOptions,
+  BachsPlan,
+  BachsOneTimeProduct,
+  BillingReferenceType,
+} from "./types.js";
 export { BACHS_ERROR_CODES } from "./errors.js";
 export { Bachs, createBachsClient } from "./bachs-sdk.js";
 export {

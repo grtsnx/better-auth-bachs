@@ -26,6 +26,7 @@ export function resolveOptions(options: BachsPluginOptions): ResolvedBachsOption
     ...options,
     bachsClient: createBachsClient(options),
     createCustomerOnCheckout: options.createCustomerOnCheckout !== false,
+    merchant: options.merchant === true,
   };
 }
 

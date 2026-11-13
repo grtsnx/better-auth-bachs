@@ -5,6 +5,10 @@ export const BACHS_ERROR_CODES = {
     code: "PRODUCT_NOT_FOUND",
     message: "Product was not found.",
   },
+  PRODUCT_REQUIRED: {
+    code: "PRODUCT_REQUIRED",
+    message: "Provide plan, product, or productId.",
+  },
   MISSING_SUCCESS_URL: {
     code: "MISSING_SUCCESS_URL",
     message: "A success URL is required for checkout.",
@@ -20,6 +24,14 @@ export const BACHS_ERROR_CODES = {
   SUBSCRIPTION_FORBIDDEN: {
     code: "SUBSCRIPTION_FORBIDDEN",
     message: "This subscription does not belong to the signed-in user.",
+  },
+  SUBSCRIPTION_NOT_FOUND: {
+    code: "SUBSCRIPTION_NOT_FOUND",
+    message: "Subscription not found.",
+  },
+  PAYMENT_NOT_FOUND: {
+    code: "PAYMENT_NOT_FOUND",
+    message: "Payment not found.",
   },
   INVALID_WEBHOOK: {
     code: "INVALID_WEBHOOK",
@@ -37,5 +49,13 @@ export const BACHS_ERROR_CODES = {
   ALREADY_SUBSCRIBED: {
     code: "ALREADY_SUBSCRIBED",
     message: "An active subscription already exists for this plan group.",
+  },
+  MERCHANT_DISABLED: {
+    code: "MERCHANT_DISABLED",
+    message: "Merchant endpoints are disabled. Set merchant: true to enable.",
+  },
+  PAYOUT_AMOUNT_REQUIRED: {
+    code: "PAYOUT_AMOUNT_REQUIRED",
+    message: "Provide amount or quoteId.",
   },
 } as const;

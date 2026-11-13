@@ -1,8 +1,11 @@
 import type { Bachs, BachsOptions, WebhookEvent } from "@bachs/sdk";
+import type { GenericEndpointContext } from "better-auth";
 import type { InferOptionSchema } from "better-auth/types";
 import type { BachsPluginSchema } from "./schema.js";
 
 export type BachsClient = Bachs;
+
+export type BillingReferenceType = "user" | "organization";
 
 export type BachsPlan = {
   /** App-facing plan name, e.g. "pro" */
@@ -11,8 +14,8 @@ export type BachsPlan = {
   productId: string;
   description?: string;
   /**
-   * Optional group. A user may only have one active/trialing subscription
-   * per group (same idea as better-auth-paystack).
+   * Optional group. A reference may only have one active/trialing
+   * subscription per group (e.g. `"workspace"`).
    */
   group?: string;
 };
@@ -21,6 +24,12 @@ export type BachsOneTimeProduct = {
   name: string;
   productId: string;
   description?: string;
+};
+
+export type AuthorizeReferenceArgs = {
+  referenceId: string;
+  referenceType: BillingReferenceType;
+  userId: string;
 };
 
 export type BachsPluginOptions = {
@@ -55,6 +64,13 @@ export type BachsPluginOptions = {
   subscription?: {
     enabled?: boolean;
     plans?: BachsPlan[];
+    /**
+     * Custom authorization for billing references (user or organization).
+     */
+    authorizeReference?: (
+      ctx: GenericEndpointContext,
+      args: AuthorizeReferenceArgs,
+    ) => boolean | Promise<boolean>;
   };
   /**
    * One-time products mapped to Bachs catalog products.
@@ -63,8 +79,21 @@ export type BachsPluginOptions = {
     products?: BachsOneTimeProduct[];
   };
   /**
-   * When true, persist a local Bachs customer row after checkout / webhook
-   * using the signed-in Better Auth user.
+   * Organization billing (requires better-auth organization plugin).
+   */
+  organization?: {
+    enabled?: boolean;
+    /** Roles allowed to manage org billing. Default: owner, admin */
+    billingRoles?: string[];
+  };
+  /**
+   * Enable merchant-account endpoints (balance, banks, payouts, product create).
+   * Only for apps that manage the Bachs merchant account itself.
+   * @default false
+   */
+  merchant?: boolean;
+  /**
+   * When true, persist a local Bachs customer row after checkout / webhook.
    * @default true
    */
   createCustomerOnCheckout?: boolean;
@@ -81,4 +110,5 @@ export type BachsPluginOptions = {
 export type ResolvedBachsOptions = BachsPluginOptions & {
   bachsClient: BachsClient;
   createCustomerOnCheckout: boolean;
+  merchant: boolean;
 };
