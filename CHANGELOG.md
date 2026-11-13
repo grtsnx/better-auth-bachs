@@ -9,6 +9,10 @@
 - Add customer/reference uniqueness and billing lookup indexes
 - Upgrade Vitest to a patched version and update vulnerable transitive development dependencies
 
+## 0.5.2
+
+- Validate npm OIDC trusted publishing via GitHub Actions
+
 ## 0.5.1
 
 - Republish after staged 0.5.0 reservation
